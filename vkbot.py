@@ -2,7 +2,6 @@ import vk_api
 from vk_api.exceptions import ApiError
 from random import randrange
 import difflib
-import json
 
 from data.info import relations_dict
 from data import db
@@ -160,24 +159,39 @@ class Bot_front:
                     self.write_msg(f"Предпочтительное семейное положение для поиска:\n '{status.capitalize()}'\n"
                                    f"Верно?")
 
+    def change_search_list(self):
+        search_delete = self.session.query(db.Search).filter(db.Search.user_id == self.user_id).all()
+        [self.session.delete(user) for user in search_delete]
+        self.session.commit()
+        vk_users_id = self.vk_back.search(self.params)
+        for vk_id in vk_users_id:
+            search_line = db.Search()
+            search_line.user_id = self.user_id
+            search_line.vk_id = vk_id
+            self.update_db(search_line)
+        return True
+
     def change_params(self):
         self.change_sex()
         self.change_age()
         self.change_city()
         self.change_relations()
-        self.params.search_list = json.dumps(self.vk_back.search(self.params))
         self.update_db()
+        self.change_search_list()
         self.write_msg("Параметры поиска успешно изменены ✅")
         return True
 
-    def update_db(self):
-        self.session.add(self.params)
+    def update_db(self, *args, delete=False):
+        if delete:
+            self.session.delete(*args)
+        else:
+            self.session.add_all([self.params, *args])
         self.session.commit()
         return True
 
     def show_people(self):
         """Приветствую тебя в режиме поиска!
-        Здесь ты можешь использовать следющие команды для навигации:
+        Здесь ты можешь использовать следующие команды для навигации:
         &#9989; Дальше => перемещение по списку
         &#9989; Выйти => выход в главное меню
         &#9989; Лайк => поставить лайк данному пользователю
@@ -189,43 +203,46 @@ class Bot_front:
                 self.params = db.User()
                 self.params.id = self.user_id
                 self.change_params()
-            users_list = json.loads(self.params.search_list)
-            if not users_list:
+            user = self.session.query(db.Search).outerjoin(db.Blacklist,
+                                                           db.Search.vk_id == db.Blacklist.vk_id).filter(
+                                                        db.Search.user_id == self.user_id,
+                                                        db.Search.showed == False,
+                                                        db.Blacklist.vk_id == None).first()
+            if not user:
                 self.write_msg("Упс! К сожалению больше мы ничего не смогли найти по Вашим параметрам 📝\n"
                                "Вы всегда можете задать новые параметры командой: 'Изменить параметры'")
                 return
-            user = users_list[0]
-            while user in json.loads(self.params.black_list):
-                users_list.pop(0)
-                try:
-                    user = users_list[0]
-                except IndexError:
-                    self.write_msg("Упс! К сожалению больше мы ничего не смогли найти по Вашим параметрам 📝\n"
-                                   "Вы всегда можете задать новые параметры командой: 'Изменить параметры'")
-                    return
-            photos = self.vk_back.get_photo(user)
+            photos = self.vk_back.get_photo(user.vk_id)
             attach = self.vk_back.compare(photos)
             try:
                 self.write_msg(attach=attach)
             except ApiError:
                 pass
-            self.write_msg(f"https://vk.com/id{user}")
+            self.write_msg(f"https://vk.com/id{user.vk_id}")
             while True:
                 response = self.listen()
                 if response == 'выйти':
                     return
                 elif response in ['дальше', 'лайк', 'черный список']:
                     if response == 'лайк':
-                        likes_list = json.loads(self.params.likes_list) + [user]
-                        self.params.likes_list = json.dumps(likes_list)
-                        self.write_msg("Лайк поставлен ❤")
+                        likes_list = [user[0] for user in self.session.query(db.Likes.vk_id).filter(
+                                                               db.Likes.user_id == self.user_id).all()]
+                        if user.vk_id not in likes_list:
+                            like_line = db.Likes()
+                            like_line.user_id = self.user_id
+                            like_line.vk_id = user.vk_id
+                            self.update_db(like_line)
+                            self.write_msg("Лайк поставлен ❤")
+                        else:
+                            self.write_msg("Лайк этому пользователю уже поставлен")
                     elif response == 'черный список':
-                        black_list = json.loads(self.params.black_list) + [user]
-                        self.params.black_list = json.dumps(black_list)
+                        black_list_line = db.Blacklist()
+                        black_list_line.user_id = self.user_id
+                        black_list_line.vk_id = user.vk_id
                         self.write_msg("Пользователь добавлен в черный список ⛔")
-                    users_list.pop(0)
-                    self.params.search_list = json.dumps(users_list)
-                    self.update_db()
+                        self.update_db(black_list_line)
+                    user.showed = True
+                    self.update_db(user)
                     break
                 elif response == 'помощь':
                     self.write_msg(self.show_people.__doc__)
@@ -235,24 +252,22 @@ class Bot_front:
 
     def show_likes(self):
         """Приветствую тебя в режиме работы со списком лайков!
-        Здесь ты можешь использовать следющие команды для навигации:
+        Здесь ты можешь использовать следующие команды для навигации:
         &#9989; Дальше => перемещение по списку
         &#9989; Удалить => удаление пользователя из списка лайков
         &#9989; Стоп => возврат в главное меню"""
-        likes_list = json.loads(self.params.likes_list)
+        likes_list = self.session.query(db.Likes).filter(
+            db.Likes.user_id == self.user_id).all()
         if not likes_list:
             self.write_msg("Ваш список лайков пуст ❤")
-        for user in likes_list.copy():
-            if not likes_list:
-                self.write_msg("Ваш список лайков пуст ❤")
-                return
-            photos = self.vk_back.get_photo(user)
+        for user in likes_list:
+            photos = self.vk_back.get_photo(user.vk_id)
             attach = self.vk_back.compare(photos)
             try:
                 self.write_msg(attach=attach)
             except ApiError:
                 pass
-            self.write_msg(f"https://vk.com/id{user}")
+            self.write_msg(f"https://vk.com/id{user.vk_id}")
             while True:
                 response = self.listen()
                 if response == 'дальше' and user != likes_list[-1]:
@@ -260,11 +275,9 @@ class Bot_front:
                 elif response == 'дальше' and user == likes_list[-1]:
                     self.write_msg("На этом список закончился! ❤\n"
                                    "Вы можете удалить этого пользователя из списка или вернуться "
-                                   "в главное меню командой: 'хватит'")
+                                   "в главное меню командой: 'стоп'")
                 elif response == 'удалить':
-                    likes_list.remove(user)
-                    self.params.likes_list = json.dumps(likes_list)
-                    self.update_db()
+                    self.update_db(user, delete=True)
                     self.write_msg("Лайк убран!")
                     break
                 elif response == 'стоп':
@@ -277,12 +290,13 @@ class Bot_front:
 
     def black_list(self):
         while True:
-            black_list = json.loads(self.params.black_list)
+            black_list = self.session.query(db.Blacklist).filter(
+                db.Blacklist.user_id == self.user_id).all()
             if not black_list:
                 self.write_msg("Ваш черный список пуст ⛔")
                 return
             self.write_msg("В черном списке следующие пользователи:")
-            show_black_list = [f"https://vk.com/id{user_id}" for user_id in black_list]
+            show_black_list = [f"https://vk.com/id{user.vk_id}" for user in black_list]
             self.write_msg('\n'.join(show_black_list))
             self.write_msg("Для удаления пользователя введите его id\n"
                            "Для выхода из черного списка: 'Выйти'")
@@ -292,10 +306,11 @@ class Bot_front:
                     response = int(response)
                 except ValueError:
                     pass
-                if response in black_list:
-                    black_list.remove(response)
-                    self.params.black_list = json.dumps(black_list)
-                    self.update_db()
+                if response in [user.vk_id for user in black_list]:
+                    user_del = self.session.query(db.Blacklist).filter(
+                        db.Blacklist.user_id == self.user_id,
+                        db.Blacklist.vk_id == response).first()
+                    self.update_db(user_del, delete=True)
                     self.write_msg(f"Пользователь: https://vk.com/id{response} \n"
                                    f"Успешно убран из черного спика")
                     break
@@ -306,7 +321,7 @@ class Bot_front:
 
     def run(self):
         """Приветствую тебя в главном меню!
-        Здесь ты можешь использовать следющие команды для навигации:
+        Здесь ты можешь использовать следующие команды для навигации:
         &#9989; Изменить параметры => настройка параметров поиска
         &#9989; Показать лайки => просмотр списка лайков
         &#9989; Начать поиск => начало процесса поиска партнера
@@ -318,9 +333,7 @@ class Bot_front:
                        f"Для вызова помощи напиши: 'Помощь'")
         while True:
             response = self.listen()
-            if response == 'показать параметры':
-                self.write_msg(f"Ваши параметры: {self.params}")
-            elif response == 'изменить параметры':
+            if response == 'изменить параметры':
                 self.change_params()
             elif response == 'показать лайки':
                 self.show_likes()

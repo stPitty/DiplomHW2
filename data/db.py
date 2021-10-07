@@ -1,4 +1,4 @@
-from info import database
+from data.info import database
 
 import sqlalchemy as sq
 from sqlalchemy.ext.declarative import declarative_base
@@ -16,9 +16,40 @@ class User(Base):
     age_to = sq.Column(sq.Integer, nullable=False)
     city = sq.Column(sq.Integer, nullable=False)
     status = sq.Column(sq.Integer, nullable=False)
-    search_list = sq.Column(sq.String, default='[]')
-    black_list = sq.Column(sq.String, default='[]')
-    likes_list = sq.Column(sq.String, default='[]')
+
+
+class Search(Base):
+    __tablename__ = 'search'
+    user_id = sq.Column(sq.Integer, nullable=False,)
+    vk_id = sq.Column(sq.Integer, nullable=False)
+    showed = sq.Column(sq.Boolean, default=False)
+
+    __table_args__ = (
+    sq.PrimaryKeyConstraint(user_id, vk_id),
+    sq.ForeignKeyConstraint(['user_id'], ['users.id'])
+    )
+
+
+class Likes(Base):
+    __tablename__ = 'likes'
+    user_id = sq.Column(sq.Integer, nullable=False,)
+    vk_id = sq.Column(sq.Integer, nullable=False)
+
+    __table_args__ = (
+    sq.PrimaryKeyConstraint(user_id, vk_id),
+    sq.ForeignKeyConstraint(['user_id'], ['users.id'])
+    )
+
+
+class Blacklist(Base):
+    __tablename__ = 'blacklist'
+    user_id = sq.Column(sq.Integer, nullable=False,)
+    vk_id = sq.Column(sq.Integer, nullable=False)
+
+    __table_args__ = (
+    sq.PrimaryKeyConstraint(user_id, vk_id),
+    sq.ForeignKeyConstraint(['user_id'], ['users.id'])
+    )
 
 
 def create_connect():
